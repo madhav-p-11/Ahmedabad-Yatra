@@ -3,6 +3,7 @@
 --   AHMEDABAD METRO RAIL SYSTEM — COMPLETE DDL SCRIPT
 --   (Industry-Level, Production-Ready)
 --  ██████████████████████████████████████████████████████████████
+
 --
 --  DATABASE     : PostgreSQL 15+
 --  SCHEMA       : metro
@@ -63,11 +64,14 @@ DROP SCHEMA IF EXISTS metro CASCADE;
 -- ================================================================
 
 CREATE SCHEMA metro;
-SET search_path TO metro, public;
+
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "btree_gist";
+
+SET search_path TO metro, public;
+
 
 -- ================================================================
 --  PROJECT      : AHMEDABAD METRO RAIL SYSTEM
@@ -2684,14 +2688,16 @@ ON metro.EMPLOYEE
 FOR EACH ROW
 EXECUTE FUNCTION metro.fn_employee_hr_audit();
 
+
 -- ── T7: Block gate entry if ticket is expired, cancelled, or already used ──
 CREATE OR REPLACE FUNCTION metro.fn_validate_ticket_for_scan()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
-DECLARE v_status ticket_status_t;
-DECLARE v_valid_to TIMESTAMPTZ;
+DECLARE 
+    v_status metro.ticket_status_t;
+    v_valid_to TIMESTAMPTZ;
 BEGIN
     SELECT status, valid_to INTO v_status, v_valid_to
     FROM   metro.TICKET
@@ -2740,10 +2746,10 @@ BEGIN
     IF TG_OP = 'INSERT' AND NEW.status = 'OPEN' THEN
         UPDATE metro.TRAIN
         SET    operational_status = CASE NEW.incident_type
-                                        WHEN 'CRASH'       THEN 'CRASHED'::train_status_t
-                                        WHEN 'BREAKDOWN'   THEN 'MAINTENANCE'::train_status_t
-                                        WHEN 'DERAILMENT'  THEN 'CRASHED'::train_status_t
-                                        ELSE 'SUSPENDED'::train_status_t
+                                        WHEN 'CRASH'       THEN 'CRASHED'::metro.train_status_t
+                                        WHEN 'BREAKDOWN'   THEN 'MAINTENANCE'::metro.train_status_t
+                                        WHEN 'DERAILMENT'  THEN 'CRASHED'::metro.train_status_t
+                                        ELSE 'SUSPENDED'::metro.train_status_t
                                     END,
                is_on_rest   = TRUE,
                updated_at   = NOW()
@@ -3200,18 +3206,17 @@ END $$;
 --  Given distance (km) and passenger type, returns the applicable
 --  fare from the currently active FARE_RULE slab.
 -- ================================================================
-
 CREATE OR REPLACE FUNCTION metro.calculate_fare(
-    p_distance_km    distance_km_t,
-    p_passenger_type passenger_type_t DEFAULT 'GENERAL'
+    p_distance_km    metro.distance_km_t,
+    p_passenger_type metro.passenger_type_t DEFAULT 'GENERAL'
 )
-RETURNS money_t
+RETURNS metro.money_t
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 AS $$
 DECLARE
-    v_fare money_t;
+    v_fare metro.money_t;
 BEGIN
     SELECT
         CASE p_passenger_type
@@ -3246,6 +3251,8 @@ $$;
 COMMENT ON FUNCTION metro.calculate_fare IS
 'Returns applicable fare for given distance and passenger type from active slab.';
 
+
+
 -- ================================================================
 --  P02 — GENERATE_QR_CODE
 --  Generates a unique, non-guessable QR payload string.
@@ -3270,7 +3277,7 @@ BEGIN
                 || '-'
                 || TO_CHAR(NOW(), 'YYYYMMDD')
                 || '-'
-                || UPPER(ENCODE(gen_random_bytes(16), 'hex'));
+                || UPPER(ENCODE(public.gen_random_bytes(16), 'hex'));
 
         -- Check uniqueness across both TICKET and TRAVEL_PASS
         SELECT EXISTS (
@@ -3301,15 +3308,15 @@ CREATE OR REPLACE FUNCTION metro.book_ticket(
     p_passenger_id      INT,
     p_from_station_id   INT,
     p_to_station_id     INT,
-    p_ticket_type       ticket_type_t        DEFAULT 'SINGLE',
-    p_booking_channel   booking_channel_t    DEFAULT 'MOBILE_APP',
-    p_payment_method    payment_method_t     DEFAULT 'UPI',
+    p_ticket_type       metro.ticket_type_t        DEFAULT 'SINGLE',
+    p_booking_channel   metro.booking_channel_t    DEFAULT 'MOBILE_APP',
+    p_payment_method    metro.payment_method_t     DEFAULT 'UPI',
     p_booked_by_emp_id  INT                  DEFAULT NULL   -- Non-null for counter bookings
 )
 RETURNS TABLE(
     out_ticket_id    BIGINT,
     out_qr_code      VARCHAR,
-    out_price_paid   money_t,
+    out_price_paid   metro.money_t,
     out_payment_id   BIGINT,
     out_valid_from   TIMESTAMPTZ,
     out_valid_to     TIMESTAMPTZ
@@ -3319,15 +3326,15 @@ VOLATILE
 SECURITY DEFINER
 AS $$
 DECLARE
-    v_passenger_type    passenger_type_t;
+    v_passenger_type    metro.passenger_type_t;
     v_from_code         VARCHAR(10);
     v_to_code           VARCHAR(10);
     v_from_zone         SMALLINT;
     v_to_zone           SMALLINT;
-    v_distance_km       distance_km_t;
+    v_distance_km       metro.distance_km_t;
     v_fare_rule_id      INT;
-    v_base_fare         money_t;
-    v_price_paid        money_t;
+    v_base_fare         metro.money_t;
+    v_price_paid        metro.money_t;
     v_qr_code           VARCHAR(512);
     v_ticket_id         BIGINT;
     v_payment_id        BIGINT;
@@ -3505,18 +3512,18 @@ CREATE OR REPLACE FUNCTION metro.cancel_ticket(
 )
 RETURNS TABLE(
     out_status         TEXT,
-    out_refund_amount  money_t
+    out_refund_amount  metro.money_t
 )
 LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 AS $$
 DECLARE
-    v_status        ticket_status_t;
+    v_status        metro.ticket_status_t;
     v_valid_from    TIMESTAMPTZ;
-    v_price_paid    money_t;
+    v_price_paid    metro.money_t;
     v_refund_mins   INT;
-    v_refund_amount money_t := 0;
+    v_refund_amount metro.money_t := 0;
     v_minutes_to_travel NUMERIC;
 BEGIN
     -- Lock ticket row
@@ -3591,7 +3598,7 @@ CREATE OR REPLACE FUNCTION metro.process_gate_scan(
     p_qr_code        VARCHAR(512),
     p_station_id     INT,
     p_platform_no    SMALLINT,
-    p_gate_role      gate_role_t,
+    p_gate_role      metro.gate_role_t,
     p_gate_device_id VARCHAR(50),
     p_schedule_id    INT      DEFAULT NULL,
     p_stop_sequence  SMALLINT DEFAULT NULL
@@ -3615,7 +3622,7 @@ DECLARE
     v_from_stn       VARCHAR(150);
     v_to_stn         VARCHAR(150);
     v_passenger_name VARCHAR(200);
-    v_ticket_status  ticket_status_t;
+    v_ticket_status  metro.ticket_status_t;
     v_pass_active    BOOLEAN;
     v_pass_valid_to  DATE;
     v_is_ticket      BOOLEAN := FALSE;
@@ -4259,10 +4266,10 @@ COMMENT ON FUNCTION metro.replace_train_after_incident IS
 CREATE OR REPLACE FUNCTION metro.add_station(
     p_station_code    VARCHAR(10),
     p_station_name    VARCHAR(150),
-    p_station_type    station_type_t    DEFAULT 'ELEVATED',
+    p_station_type    metro.station_type_t    DEFAULT 'ELEVATED',
     p_zone_no         SMALLINT          DEFAULT 1,
-    p_latitude        latitude_t        DEFAULT NULL,
-    p_longitude       longitude_t       DEFAULT NULL,
+    p_latitude        metro.latitude_t        DEFAULT NULL,
+    p_longitude       metro.longitude_t       DEFAULT NULL,
     p_address         TEXT              DEFAULT NULL,
     p_opening_date    DATE              DEFAULT NULL,
     p_created_by_emp  INT               DEFAULT NULL
@@ -4302,7 +4309,7 @@ CREATE OR REPLACE FUNCTION metro.add_halt_to_line(
     p_line_id           INT,
     p_station_id        INT,
     p_sequence_no       SMALLINT,
-    p_dist_from_start   distance_km_t,
+    p_dist_from_start   metro.distance_km_t,
     p_done_by_emp_id    INT DEFAULT NULL
 )
 RETURNS TEXT
@@ -4401,7 +4408,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION metro.close_station(
     p_station_id        INT,
-    p_closure_type      closure_type_t,
+    p_closure_type      metro.closure_type_t,
     p_reason            TEXT,
     p_start_datetime    TIMESTAMPTZ       DEFAULT NOW(),
     p_end_datetime      TIMESTAMPTZ       DEFAULT NULL,
@@ -4489,10 +4496,10 @@ CREATE OR REPLACE FUNCTION metro.add_driver(
     p_employee_code VARCHAR(20),
     p_full_name     VARCHAR(200),
     p_dob           DATE,
-    p_phone         phone_t,
+    p_phone         metro.phone_t,
     p_license_no    VARCHAR(50),
     p_license_expiry DATE,
-    p_salary        money_t,
+    p_salary        metro.money_t,
     p_joining_date  DATE              DEFAULT CURRENT_DATE,
     p_created_by    INT               DEFAULT NULL
 )
@@ -4606,7 +4613,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION metro.update_driver_salary(
     p_driver_id      INT,
-    p_new_salary     money_t,
+    p_new_salary     metro.money_t,
     p_reason         TEXT,
     p_done_by_emp_id INT
 )
@@ -4615,7 +4622,7 @@ LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 AS $$
-DECLARE v_old_salary money_t;
+DECLARE v_old_salary metro.money_t;
 BEGIN
     SELECT salary INTO v_old_salary
     FROM   metro.DRIVER
@@ -4756,7 +4763,7 @@ DECLARE
     v_old_platform    SMALLINT;
     v_sched_dep       TIME;
     v_sched_arr       TIME;
-    v_day_type        day_type_t;
+    v_day_type        metro.day_type_t;
     v_grace_mins      INT;
 BEGIN
     -- Get current stop details
@@ -4863,8 +4870,8 @@ COMMENT ON FUNCTION metro.change_platform_for_schedule_stop IS
 CREATE OR REPLACE FUNCTION metro.update_live_tracking(
     p_train_id        INT,
     p_schedule_id     INT,
-    p_latitude        latitude_t,
-    p_longitude       longitude_t,
+    p_latitude        metro.latitude_t,
+    p_longitude       metro.longitude_t,
     p_speed_kmph      NUMERIC(5,2),
     p_heading_degrees NUMERIC(5,2)  DEFAULT NULL,
     p_altitude_m      NUMERIC(7,2)  DEFAULT NULL
@@ -4969,15 +4976,15 @@ $$;
 -- ================================================================
 
 CREATE OR REPLACE FUNCTION metro.update_fare_rule(
-    p_min_dist         distance_km_t,
-    p_max_dist         distance_km_t,
-    p_base_fare        money_t,
-    p_normal_fare      money_t,
-    p_senior_fare      money_t,
-    p_disabled_fare    money_t,
-    p_child_fare       money_t,
-    p_student_fare     money_t,
-    p_tourist_fare     money_t,
+    p_min_dist         metro.distance_km_t,
+    p_max_dist         metro.distance_km_t,
+    p_base_fare        metro.money_t,
+    p_normal_fare      metro.money_t,
+    p_senior_fare      metro.money_t,
+    p_disabled_fare    metro.money_t,
+    p_child_fare       metro.money_t,
+    p_student_fare     metro.money_t,
+    p_tourist_fare     metro.money_t,
     p_effective_from   DATE    DEFAULT CURRENT_DATE,
     p_done_by_emp_id   INT     DEFAULT NULL
 )
@@ -5023,7 +5030,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION metro.issue_travel_pass(
     p_passenger_id     INT,
-    p_pass_type        pass_type_t,
+    p_pass_type        metro.pass_type_t,
     p_valid_from       DATE              DEFAULT CURRENT_DATE,
     p_institution_name VARCHAR(200)      DEFAULT NULL,
     p_institution_id   VARCHAR(100)      DEFAULT NULL,
@@ -5033,7 +5040,7 @@ RETURNS TABLE(
     out_pass_id   INT,
     out_qr_code   VARCHAR,
     out_valid_to  DATE,
-    out_price     money_t
+    out_price     metro.money_t
 )
 LANGUAGE plpgsql
 VOLATILE
@@ -5043,7 +5050,7 @@ DECLARE
     v_pass_id    INT;
     v_qr_code    VARCHAR(512);
     v_valid_to   DATE;
-    v_price      money_t;
+    v_price      metro.money_t;
     v_days       INT;
 BEGIN
     -- Determine validity window by pass type
@@ -5099,23 +5106,23 @@ $$;
 CREATE OR REPLACE FUNCTION metro.get_journey_routes(
     p_from_station_id   INT,
     p_to_station_id     INT,
-    p_day_type          day_type_t  DEFAULT 'WEEKDAY',
+    p_day_type          metro.day_type_t  DEFAULT 'WEEKDAY',
     p_current_time      TIME        DEFAULT CURRENT_TIME
 )
 RETURNS TABLE(
     route_type         TEXT,
     line_name          VARCHAR,
-    color_code         hex_color_t,
+    color_code         metro.hex_color_t,
     from_station       VARCHAR,
     to_station         VARCHAR,
     interchange_at     VARCHAR,
     second_line        VARCHAR,
     next_departure     TIME,
     estimated_mins     INT,
-    fare_normal        money_t,
-    fare_student       money_t,
-    fare_senior        money_t,
-    distance_km        distance_km_t,
+    fare_normal        metro.money_t,
+    fare_student       metro.money_t,
+    fare_senior        metro.money_t,
+    distance_km        metro.distance_km_t,
     stops_count        INT
 )
 LANGUAGE plpgsql
@@ -5123,7 +5130,7 @@ STABLE
 SECURITY DEFINER
 AS $$
 DECLARE
-    v_distance distance_km_t;
+    v_distance metro.distance_km_t;
 BEGIN
     -- ── Route Type 1: DIRECT — same line ──────────────────────────
     RETURN QUERY
@@ -5250,7 +5257,7 @@ COMMENT ON FUNCTION metro.get_journey_routes IS
 
 CREATE OR REPLACE FUNCTION metro.get_next_trains_for_station(
     p_station_id    INT,
-    p_day_type      day_type_t  DEFAULT 'WEEKDAY',
+    p_day_type      metro.day_type_t  DEFAULT 'WEEKDAY',
     p_from_time     TIME        DEFAULT CURRENT_TIME,
     p_limit         INT         DEFAULT 10
 )
@@ -5258,12 +5265,12 @@ RETURNS TABLE(
     schedule_id        INT,
     train_number       VARCHAR,
     line_name          VARCHAR,
-    color_code         hex_color_t,
-    direction          direction_t,
+    color_code         metro.hex_color_t,
+    direction          metro.direction_t,
     platform_no        SMALLINT,
     departure_time     TIME,
     dynamic_eta        TIMESTAMPTZ,
-    schedule_status    schedule_status_t,
+    schedule_status    metro.schedule_status_t,
     crowd_level        TEXT,
     crowd_pct          NUMERIC
 )
@@ -5321,7 +5328,7 @@ RETURNS TABLE(
     train_id        INT,
     train_number    VARCHAR,
     line_name       VARCHAR,
-    color_code      hex_color_t,
+    color_code      metro.hex_color_t,
     total_capacity  INT,
     crowd_count     INT,
     crowd_pct       NUMERIC,
@@ -5404,8 +5411,8 @@ CREATE OR REPLACE FUNCTION metro.add_train_schedule(
     p_train_id       INT,
     p_line_id        INT,
     p_track_id       INT,
-    p_direction      direction_t,
-    p_day_type       day_type_t,
+    p_direction      metro.direction_t,
+    p_day_type       metro.day_type_t,
     p_depart_time    TIME,
     p_arrive_time    TIME,
     p_stops_json     JSONB,              -- array of stop objects
@@ -5635,7 +5642,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION metro.update_employee_salary(
     p_employee_id    INT,
-    p_new_salary     money_t,
+    p_new_salary     metro.money_t,
     p_reason         TEXT,
     p_done_by_emp_id INT
 )
@@ -5644,7 +5651,7 @@ LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 AS $$
-DECLARE v_old money_t;
+DECLARE v_old metro.money_t;
 BEGIN
     SELECT salary INTO v_old
     FROM   metro.EMPLOYEE
@@ -5680,7 +5687,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION metro.get_station_crowd_by_line(
     p_line_id   INT,
-    p_day_type  day_type_t DEFAULT 'WEEKDAY'
+    p_day_type  metro.day_type_t DEFAULT 'WEEKDAY'
 )
 RETURNS TABLE(
     schedule_id     INT,
@@ -5744,11 +5751,11 @@ CREATE OR REPLACE FUNCTION metro.get_fare_for_passenger(
 )
 RETURNS TABLE(
     passenger_name   VARCHAR,
-    passenger_type   passenger_type_t,
+    passenger_type   metro.passenger_type_t,
     from_station     VARCHAR,
     to_station       VARCHAR,
-    distance_km      distance_km_t,
-    applicable_fare  money_t,
+    distance_km      metro.distance_km_t,
+    applicable_fare  metro.money_t,
     fare_rule_id     INT
 )
 LANGUAGE plpgsql
@@ -5756,10 +5763,10 @@ STABLE
 SECURITY DEFINER
 AS $$
 DECLARE
-    v_ptype     passenger_type_t;
+    v_ptype     metro.passenger_type_t;
     v_pname     VARCHAR(200);
-    v_dist      distance_km_t;
-    v_fare      money_t;
+    v_dist      metro.distance_km_t;
+    v_fare      metro.money_t;
     v_rule_id   INT;
     v_from_name VARCHAR(150);
     v_to_name   VARCHAR(150);
@@ -5969,8 +5976,8 @@ $$;
 CREATE OR REPLACE FUNCTION metro.add_line(
     p_line_code       VARCHAR(10),
     p_line_name       VARCHAR(100),
-    p_color_code      hex_color_t,
-    p_total_length_km distance_km_t,
+    p_color_code      metro.hex_color_t,
+    p_total_length_km metro.distance_km_t,
     p_operational_since DATE        DEFAULT NULL,
     p_created_by_emp  INT           DEFAULT NULL
 )
@@ -6006,7 +6013,7 @@ $$;
 CREATE OR REPLACE FUNCTION metro.add_platform(
     p_station_id    INT,
     p_platform_no   SMALLINT,
-    p_direction     direction_t,
+    p_direction     metro.direction_t,
     p_capacity      INT,
     p_created_by    INT DEFAULT NULL
 )
@@ -6050,8 +6057,8 @@ $$;
 CREATE OR REPLACE FUNCTION metro.add_track(
     p_line_id      INT,
     p_track_number VARCHAR(20),
-    p_direction    direction_t   DEFAULT 'BIDIRECTIONAL',
-    p_length_km    distance_km_t DEFAULT NULL,
+    p_direction    metro.direction_t   DEFAULT 'BIDIRECTIONAL',
+    p_length_km    metro.distance_km_t DEFAULT NULL,
     p_max_speed    SMALLINT      DEFAULT 80,
     p_created_by   INT           DEFAULT NULL
 )
@@ -6089,7 +6096,7 @@ $$;
 CREATE OR REPLACE FUNCTION metro.search_routes_with_bus_handoff(
     p_from_station_id INT,
     p_to_station_id   INT,
-    p_day_type        day_type_t DEFAULT 'WEEKDAY'
+    p_day_type        metro.day_type_t DEFAULT 'WEEKDAY'
 )
 RETURNS TABLE(
     route_type         TEXT,
@@ -6098,8 +6105,8 @@ RETURNS TABLE(
     from_station       VARCHAR,
     to_station         VARCHAR,
     estimated_mins     INT,
-    fare_normal        money_t,
-    distance_km        distance_km_t,
+    fare_normal        metro.money_t,
+    distance_km        metro.distance_km_t,
     bus_handoff_needed BOOLEAN,
     nearest_bus_point  VARCHAR
 )
@@ -6136,8 +6143,8 @@ BEGIN
         sf.station_name,
         st.station_name,
         NULL::INT,
-        NULL::money_t,
-        NULL::distance_km_t,
+        NULL::metro.money_t,
+        NULL::metro.distance_km_t,
         TRUE,
         st.station_name || ' (Metro Exit → Bus Stand)'
     FROM metro.STATION sf, metro.STATION st
@@ -6721,458 +6728,3 @@ WHERE routine_schema='metro';
 
 
 
--- ================================================================
---  AHMEDABAD METRO RAIL SYSTEM — DUMMY DATA INSERTION SCRIPT
---  Part 1 of 3 : LINE → STATION → PLATFORM → STATION_ON_LINE → TRACK
---  Source       : Real data from Gujarat Metro Rail Corporation (GMRC)
---                 Wikipedia / YoMetro / Official GMRC website
---  Order        : Parent tables first, then FK-dependent tables
--- ================================================================
- 
-
- 
--- ================================================================
---  1. LINE  (4 operational lines as of 2026)
--- ================================================================
- 
-INSERT INTO metro.LINE
-    (line_code, line_name, color_code, total_length_km,
-     total_stations, status, operational_since, description)
-VALUES
--- Blue Line (East-West Corridor, Phase 1)
-('L1', 'Blue Line',
- '#0000FF', 21.23, 18, 'OPERATIONAL', '2019-03-04',
- 'East-West Corridor Phase 1. Vastral Gam to Thaltej Gam. '
- '4 underground + 14 elevated stations.'),
- 
--- Red Line (North-South Corridor, Phase 1)
-('L2', 'Red Line',
- '#FF0000', 22.80, 15, 'OPERATIONAL', '2022-10-06',
- 'North-South Corridor Phase 1. APMC Vasna to Motera Stadium. '
- 'All elevated stations.'),
- 
--- Yellow Line (Phase 2 — Motera to Mahatma Mandir, Gandhinagar)
-('L3', 'Yellow Line',
- '#FFD700', 28.25, 21, 'OPERATIONAL', '2024-09-17',
- 'Phase 2 Yellow Line. Motera Stadium to Mahatma Mandir, Gandhinagar. '
- 'Fully elevated, connects Ahmedabad to Gandhinagar.'),
- 
--- Violet Line (Phase 2 spur — GNLU to GIFT City)
-('L4', 'Violet Line',
- '#8B00FF', 5.42, 2, 'OPERATIONAL', '2024-09-17',
- 'Phase 2 Violet Line spur. GNLU to GIFT City. '
- 'Connects Gandhinagar Financial Hub to metro network.');
-
- 
--- ================================================================
---  2. STATION  (All 54 operational stations with real coordinates)
--- ================================================================
- 
-INSERT INTO metro.STATION
-    (station_code, station_name, station_type, zone_no,
-     latitude, longitude, address, city, opening_date,
-     has_lift, has_escalator, has_parking, has_feeder_bus,
-     wheelchair_accessible, is_interchange, is_terminal, is_active)
-VALUES
--- ── BLUE LINE (L1) — 18 stations ──────────────────────────────
-('VTG', 'Vastral Gam',         'ELEVATED',     1,  23.0021,  72.6421,
- 'Vastral Gam, Vastral, Ahmedabad',         'Ahmedabad', '2019-03-04',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE,TRUE),
- 
-('VTR', 'Vastral',             'ELEVATED',     1,  23.0063,  72.6310,
- 'Vastral, Ahmedabad',                      'Ahmedabad', '2019-03-04',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('RBC', 'Rabari Colony',       'ELEVATED',     1,  23.0137,  72.6159,
- 'Rabari Colony, Vastral Road, Ahmedabad',  'Ahmedabad', '2019-03-04',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('AMR', 'Amraiwadi',           'ELEVATED',     1,  23.0167,  72.6042,
- 'Amraiwadi, Ahmedabad',                    'Ahmedabad', '2019-03-04',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('APL', 'Apparel Park',        'ELEVATED',     1,  23.0198,  72.5941,
- 'Apparel Park, Narol-Naroda Rd, Ahmedabad','Ahmedabad', '2019-03-04',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('KKE', 'Kankaria East',       'UNDERGROUND',  2,  23.0013,  72.5955,
- 'Kankaria Lake East Gate, Ahmedabad',      'Ahmedabad', '2022-10-02',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('KLP', 'Kalupur Railway Station','UNDERGROUND',2, 23.0269,  72.5874,
- 'Kalupur, Near Ahmedabad Junction, Ahmedabad','Ahmedabad','2022-10-02',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('GHK', 'Gheekanta',           'UNDERGROUND',  2,  23.0338,  72.5831,
- 'Gheekanta Road, Ahmedabad',               'Ahmedabad', '2022-10-02',
- TRUE,TRUE,FALSE,FALSE,TRUE,FALSE,FALSE,TRUE),
- 
-('SHP', 'Shahpur',             'UNDERGROUND',  2,  23.0394,  72.5795,
- 'Shahpur, Old City, Ahmedabad',            'Ahmedabad', '2022-10-02',
- TRUE,TRUE,FALSE,FALSE,TRUE,FALSE,FALSE,TRUE),
- 
-('OHC', 'Old High Court',      'ELEVATED',     2,  23.0452,  72.5762,
- 'High Court Area, Ahmedabad',              'Ahmedabad', '2022-10-02',
- TRUE,TRUE,FALSE,TRUE,TRUE,TRUE,FALSE,TRUE),  -- INTERCHANGE
- 
-('SPS', 'SP Stadium',          'ELEVATED',     2,  23.0543,  72.5725,
- 'SP Stadium, Navrangpura, Ahmedabad',      'Ahmedabad', '2022-10-02',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('CXR', 'Commerce Six Road',   'ELEVATED',     2,  23.0619,  72.5698,
- 'Commerce Six Roads, Navrangpura, Ahmedabad','Ahmedabad','2022-10-02',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('GUV', 'Gujarat University',  'ELEVATED',     3,  23.0698,  72.5612,
- 'Gujarat University Campus, Ahmedabad',    'Ahmedabad', '2022-10-02',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('GKR', 'Gurukul Road',        'ELEVATED',     3,  23.0771,  72.5551,
- 'Gurukul Road, Memnagar, Ahmedabad',       'Ahmedabad', '2022-10-02',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('DDK', 'Doordarshan Kendra',  'ELEVATED',     3,  23.0842,  72.5498,
- 'Doordarshan Kendra, Drive-In Road, Ahmedabad','Ahmedabad','2022-10-02',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('TLT', 'Thaltej',             'ELEVATED',     3,  23.0913,  72.5412,
- 'Thaltej, S.G. Highway, Ahmedabad',        'Ahmedabad', '2022-10-02',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('TLG', 'Thaltej Gam',         'ELEVATED',     3,  23.0961,  72.5356,
- 'Thaltej Gam Village, Ahmedabad',          'Ahmedabad', '2024-12-08',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE,TRUE),
- 
-('NCR', 'Nirant Cross Road',   'ELEVATED',     1,  23.0089,  72.6498,
- 'Nirant Cross Road, Vastral, Ahmedabad',   'Ahmedabad', '2019-03-04',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
--- ── RED LINE (L2) — 15 stations ────────────────────────────────
-('APC', 'APMC',                'ELEVATED',     1,  22.9892,  72.5603,
- 'APMC Vegetable Market, Vasna, Ahmedabad', 'Ahmedabad', '2022-10-06',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE,TRUE),
- 
-('JVP', 'Jivraj Park',         'ELEVATED',     1,  22.9971,  72.5588,
- 'Jivraj Park, Ahmedabad',                  'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('RJN', 'Rajiv Nagar',         'ELEVATED',     1,  23.0042,  72.5562,
- 'Rajiv Nagar, Ahmedabad',                  'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('SHR', 'Shreyas',             'ELEVATED',     2,  23.0121,  72.5538,
- 'Shreyas Crossing, Ahmedabad',             'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('PAL', 'Paldi',               'ELEVATED',     2,  23.0211,  72.5538,
- 'Paldi, Ahmedabad',                        'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('GDG', 'Gandhigram',          'ELEVATED',     2,  23.0298,  72.5556,
- 'Gandhigram, Ashram Road, Ahmedabad',      'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
--- OHC already inserted above (interchange)
- 
-('USM', 'Usmanpura',           'ELEVATED',     2,  23.0532,  72.5667,
- 'Usmanpura, Ashram Road, Ahmedabad',       'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('VJN', 'Vijay Nagar',         'ELEVATED',     2,  23.0612,  72.5621,
- 'Vijay Nagar Cross Road, Ahmedabad',       'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('VDJ', 'Vadaj',               'ELEVATED',     3,  23.0731,  72.5589,
- 'Vadaj, Ahmedabad',                        'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('RNP', 'Ranip',               'ELEVATED',     3,  23.0841,  72.5556,
- 'Ranip, Ahmedabad',                        'Ahmedabad', '2022-10-06',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('SBR', 'Sabarmati',           'ELEVATED',     3,  23.0942,  72.5521,
- 'Sabarmati, Ahmedabad',                    'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('AEC', 'AEC',                 'ELEVATED',     3,  23.0998,  72.5498,
- 'AEC Cross Road, Ahmedabad',               'Ahmedabad', '2022-10-06',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('MTS', 'Motera Stadium',      'ELEVATED',     3,  23.1042,  72.5467,
- 'Narendra Modi Stadium, Motera, Ahmedabad','Ahmedabad', '2022-10-06',
- TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE),  -- INTERCHANGE (Red+Yellow)
- 
--- ── YELLOW LINE (L3) — 21 stations ─────────────────────────────
--- Motera Stadium already inserted above (interchange)
- 
-('SC1', 'Sector-1 Gandhinagar','ELEVATED',     3,  23.1142,  72.5423,
- 'Sector-1, Gandhinagar',                   'Gandhinagar','2024-09-17',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('IFC', 'Infocity',            'ELEVATED',     3,  23.1231,  72.5389,
- 'Infocity Campus, Gandhinagar',            'Gandhinagar','2024-09-17',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('DHC', 'Dholakuva Circle',    'ELEVATED',     3,  23.1312,  72.5341,
- 'Dholakuva Circle, Gandhinagar',           'Gandhinagar','2024-09-17',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('RDS', 'Randesan',            'ELEVATED',     3,  23.1398,  72.5298,
- 'Randesan Village, Gandhinagar',           'Gandhinagar','2024-09-17',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('GNL', 'GNLU',                'ELEVATED',     3,  23.1489,  72.5254,
- 'Gujarat National Law University, Gandhinagar','Gandhinagar','2024-09-17',
- TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE),  -- INTERCHANGE (Yellow+Violet)
- 
-('RYS', 'Raysan',              'ELEVATED',     3,  23.1554,  72.5213,
- 'Raysan, Gandhinagar',                     'Gandhinagar','2024-09-17',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('KBC', 'Koba Circle',         'ELEVATED',     3,  23.1623,  72.5178,
- 'Koba Circle, Gandhinagar',                'Gandhinagar','2025-04-27',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('NMC', 'Narmada Canal',       'ELEVATED',     4,  23.1698,  72.5134,
- 'Narmada Canal, Gandhinagar',              'Gandhinagar','2025-04-27',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('TPC', 'Tapovan Circle',      'ELEVATED',     4,  23.1774,  72.5089,
- 'Tapovan Circle, Gandhinagar',             'Gandhinagar','2025-04-27',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('VKC', 'Vishwakarma College', 'ELEVATED',     4,  23.1843,  72.5041,
- 'Vishwakarma College of Arts, Gandhinagar','Gandhinagar','2025-04-27',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('KTR', 'Koteshwar Road',      'ELEVATED',     4,  23.1912,  72.4998,
- 'Koteshwar Road, Gandhinagar',             'Gandhinagar','2025-04-27',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('S10', 'Sector-10A Gandhinagar','ELEVATED',   4,  23.1983,  72.4956,
- 'Sector-10A, Gandhinagar',                 'Gandhinagar','2025-04-27',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('SCH', 'Sachivalaya',         'ELEVATED',     4,  23.2054,  72.4912,
- 'Sachivalaya (Secretariat), Gandhinagar',  'Gandhinagar','2025-04-27',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('JNK', 'Juna Koba',           'ELEVATED',     4,  23.2134,  72.4868,
- 'Juna Koba Village, Gandhinagar',          'Gandhinagar','2025-09-28',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('KOG', 'Koba Gam',            'ELEVATED',     4,  23.2213,  72.4823,
- 'Koba Gam, Gandhinagar',                   'Gandhinagar','2025-09-28',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('AKS', 'Akshardham',          'ELEVATED',     4,  23.2287,  72.4781,
- 'Akshardham Temple Road, Gandhinagar',     'Gandhinagar','2026-01-11',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('JNS', 'Juna Sachivalaya',    'ELEVATED',     4,  23.2361,  72.4739,
- 'Old Secretariat, Gandhinagar',            'Gandhinagar','2026-01-11',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('S16', 'Sector-16 Gandhinagar','ELEVATED',    4,  23.2431,  72.4696,
- 'Sector-16, Gandhinagar',                  'Gandhinagar','2026-01-11',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('S24', 'Sector-24 Gandhinagar','ELEVATED',    4,  23.2501,  72.4651,
- 'Sector-24, Gandhinagar',                  'Gandhinagar','2026-01-11',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('MMD', 'Mahatma Mandir',      'ELEVATED',     4,  23.2572,  72.4608,
- 'Mahatma Mandir Convention Centre, Gandhinagar','Gandhinagar','2026-01-11',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE,TRUE),
- 
--- ── VIOLET LINE (L4) — 2 stations ──────────────────────────────
--- GNLU already inserted above (interchange)
- 
-('PDU', 'PDEU',                'ELEVATED',     3,  23.1621,  72.6641,
- 'Pandit Deendayal Energy University, GIFT City Road','Gandhinagar','2024-09-17',
- TRUE,TRUE,FALSE,TRUE,TRUE,FALSE,FALSE,TRUE),
- 
-('GFT', 'GIFT City',           'ELEVATED',     3,  23.1683,  72.6712,
- 'GIFT City, Gujarat International Finance Tec-City','Gandhinagar','2024-09-17',
- TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE,TRUE);
-
-
- 
--- ================================================================
---  3. PLATFORM  (weak entity — at least 2 per station)
---  Real Ahmedabad Metro: elevated = side platforms,
---  underground = island platforms
--- ================================================================
- 
--- Helper: insert 2 platforms for each station
--- Elevated stations → NORTHBOUND/SOUTHBOUND or EASTBOUND/WESTBOUND
--- Underground (island) → single island = 2 entries pointing same direction
- 
-DO $plat$
-DECLARE
-    r RECORD;
-    dir1 metro.direction_t;
-    dir2 metro.direction_t;
-BEGIN
-    FOR r IN
-        SELECT station_id, station_code, station_type
-        FROM   metro.STATION
-        WHERE  is_deleted = FALSE
-        ORDER  BY station_id
-    LOOP
-        -- Blue Line stations (East-West) get E/W directions
-        -- Red/Yellow/Violet (mostly N-S) get N/S directions
-        IF r.station_code IN (
-            'VTG','VTR','RBC','AMR','APL','KKE','KLP','GHK',
-            'SHP','OHC','SPS','CXR','GUV','GKR','DDK','TLT','TLG','NCR'
-        ) THEN
-            dir1 := 'EASTBOUND';  dir2 := 'WESTBOUND';
-        ELSE
-            dir1 := 'NORTHBOUND'; dir2 := 'SOUTHBOUND';
-        END IF;
- 
-        INSERT INTO metro.PLATFORM
-            (station_id, platform_no, direction, capacity,
-             has_screen_doors, has_cctv, is_available)
-        VALUES
-            (r.station_id, 1, dir1, 800, TRUE, TRUE, TRUE),
-            (r.station_id, 2, dir2, 800, TRUE, TRUE, TRUE);
-    END LOOP;
-END $plat$;
-
-
-
--- ================================================================
---  4. STATION_ON_LINE  (real sequence and distance data)
--- ================================================================
- 
--- ── BLUE LINE (L1) — East to West ─────────────────────────────
-INSERT INTO metro.STATION_ON_LINE
-    (line_id, station_id, sequence_no, dist_from_start_km,
-     default_halt_sec, is_terminal, is_active)
-SELECT
-    l.line_id,
-    s.station_id,
-    v.seq_no,
-    v.dist_km,
-    30,
-    v.is_terminal,
-    TRUE
-FROM metro.LINE l
-CROSS JOIN (VALUES
-    ('NCR',  1,  0.00, TRUE),
-    ('VTG',  2,  1.10, FALSE),
-    ('VTR',  3,  2.30, FALSE),
-    ('RBC',  4,  3.60, FALSE),
-    ('AMR',  5,  5.10, FALSE),
-    ('APL',  6,  6.50, FALSE),
-    ('KKE',  7,  7.80, FALSE),
-    ('KLP',  8,  9.30, FALSE),
-    ('GHK',  9, 10.50, FALSE),
-    ('SHP', 10, 11.40, FALSE),
-    ('OHC', 11, 12.20, FALSE),
-    ('SPS', 12, 13.10, FALSE),
-    ('CXR', 13, 14.00, FALSE),
-    ('GUV', 14, 15.10, FALSE),
-    ('GKR', 15, 16.30, FALSE),
-    ('DDK', 16, 17.40, FALSE),
-    ('TLT', 17, 19.80, FALSE),
-    ('TLG', 18, 21.23, TRUE)
-) AS v(code, seq_no, dist_km, is_terminal)
-JOIN metro.STATION s ON s.station_code = v.code
-WHERE l.line_code = 'L1';
- 
--- ── RED LINE (L2) — South to North ────────────────────────────
-INSERT INTO metro.STATION_ON_LINE
-    (line_id, station_id, sequence_no, dist_from_start_km,
-     default_halt_sec, is_terminal, is_active)
-SELECT
-    l.line_id,
-    s.station_id,
-    v.seq_no,
-    v.dist_km,
-    30,
-    v.is_terminal,
-    TRUE
-FROM metro.LINE l
-CROSS JOIN (VALUES
-    ('APC',  1,  0.00, TRUE),
-    ('JVP',  2,  1.20, FALSE),
-    ('RJN',  3,  2.50, FALSE),
-    ('SHR',  4,  3.70, FALSE),
-    ('PAL',  5,  5.10, FALSE),
-    ('GDG',  6,  6.30, FALSE),
-    ('OHC',  7,  7.60, FALSE),
-    ('USM',  8,  8.90, FALSE),
-    ('VJN',  9, 10.20, FALSE),
-    ('VDJ', 10, 11.60, FALSE),
-    ('RNP', 11, 13.10, FALSE),
-    ('SBR', 12, 14.80, FALSE),
-    ('AEC', 13, 16.40, FALSE),
-    ('MTS', 14, 18.10, FALSE),
-    ('MMD', 15, 22.80, TRUE)  -- Sabarmati Railway Station (placeholder)
-) AS v(code, seq_no, dist_km, is_terminal)
-JOIN metro.STATION s ON s.station_code = v.code
-WHERE l.line_code = 'L2';
- 
--- ── YELLOW LINE (L3) — Motera to Mahatma Mandir ────────────────
-INSERT INTO metro.STATION_ON_LINE
-    (line_id, station_id, sequence_no, dist_from_start_km,
-     default_halt_sec, is_terminal, is_active)
-SELECT
-    l.line_id,
-    s.station_id,
-    v.seq_no,
-    v.dist_km,
-    30,
-    v.is_terminal,
-    TRUE
-FROM metro.LINE l
-CROSS JOIN (VALUES
-    ('MTS',  1,  0.00, TRUE),
-    ('SC1',  2,  1.80, FALSE),
-    ('IFC',  3,  3.20, FALSE),
-    ('DHC',  4,  4.60, FALSE),
-    ('RDS',  5,  6.10, FALSE),
-    ('GNL',  6,  7.50, FALSE),
-    ('RYS',  7,  9.00, FALSE),
-    ('KBC',  8, 10.60, FALSE),
-    ('NMC',  9, 12.10, FALSE),
-    ('TPC', 10, 13.60, FALSE),
-    ('VKC', 11, 15.10, FALSE),
-    ('KTR', 12, 16.70, FALSE),
-    ('S10', 13, 18.20, FALSE),
-    ('SCH', 14, 19.80, FALSE),
-    ('JNK', 15, 21.30, FALSE),
-    ('KOG', 16, 22.80, FALSE),
-    ('AKS', 17, 24.20, FALSE),
-    ('JNS', 18, 25.50, FALSE),
-    ('S16', 19, 26.40, FALSE),
-    ('S24', 20, 27.30, FALSE),
-    ('MMD', 21, 28.25, TRUE)
-) AS v(code, seq_no, dist_km, is_terminal)
-JOIN metro.STATION s ON s.station_code = v.code
-WHERE l.line_code = 'L3';
- 
--- ── VIOLET LINE (L4) — GNLU to GIFT City ──────────────────────
-INSERT INTO metro.STATION_ON_LINE
-    (line_id, station_id, sequence_no, dist_from_start_km,
-     default_halt_sec, is_terminal, is_active)
-SELECT
-    l.line_id,
-    s.station_id,
-    v.seq_no,
-    v.dist_km,
-    30,
-    v.is_terminal,
-    TRUE
-FROM metro.LINE l
-CROSS JOIN (VALUES
-    ('GNL', 1, 0.00, TRUE),
-    ('PDU', 2, 2.70, FALSE),
-    ('GFT', 3, 5.42, TRUE)
-) AS v(code, seq_no, dist_km, is_terminal)
-JOIN metro.STATION s ON s.station_code = v.code
-WHERE l.line_code = 'L4';
- 
-  
