@@ -1267,7 +1267,7 @@ SELECT
     fr.fare_rule_id,
     fs.stop_id, ts.stop_id,
     bsc.schedule_id,
-    v.tkt_type::bus.ticket_type_t,
+    v.tkt_type::metro.ticket_type_t,
     v.pax_cat::metro.passenger_type_t,
     metro.generate_qr_code('BUS'),
     v.dist_km,
@@ -1338,7 +1338,7 @@ JOIN (VALUES
     (3,'CASH',       'SUCCESS',  'CONDUCTOR'),
     (4,'CASH',       'SUCCESS',  'COUNTER'),
     (5,'UPI',        'SUCCESS',  'PAYTM'),
-    (6,'MOBILE_APP', 'SUCCESS',  'GPAY'),
+    (6,'UPI', 'SUCCESS',  'GPAY'),
     (7,'CASH',       'SUCCESS',  'CONDUCTOR'),
     (8,'UPI',        'SUCCESS',  'RAZORPAY'),
     (9,'CASH',       'SUCCESS',  'COUNTER'),
@@ -1409,7 +1409,7 @@ SELECT
 FROM bus.BUS_TICKET t
 JOIN bus.BUS_TRIP_STOP bts ON bts.schedule_id = t.schedule_id
                            AND bts.stop_id     = t.from_stop_id
-WHERE t.status IN ('USED','ACTIVE','ENTRY_DONE')
+WHERE t.status IN ('USED','ACTIVE')
 AND   t.is_deleted = FALSE
 AND   t.schedule_id IS NOT NULL;
 
@@ -1466,15 +1466,28 @@ FROM (VALUES
 ) AS v(pname, bus_num, stop_code)
 JOIN metro.PASSENGER      p    ON p.full_name     = v.pname
 JOIN bus.BUS              b    ON b.bus_number    = v.bus_num
-JOIN bus.BUS_SCHEDULE     bsc  ON bsc.bus_id      = b.bus_id
-                               AND bsc.direction  = 'FORWARD'
-                               AND bsc.is_deleted = FALSE
+JOIN LATERAL (
+    SELECT schedule_id
+    FROM bus.BUS_SCHEDULE s
+    WHERE s.bus_id = b.bus_id
+      AND s.direction='FORWARD'
+      AND s.is_deleted=FALSE
+    ORDER BY s.departure_time
+    LIMIT 1
+) bsc ON TRUE
 JOIN bus.BUS_STOP         st   ON st.stop_code    = v.stop_code
 JOIN bus.BUS_TRIP_STOP    bts  ON bts.schedule_id = bsc.schedule_id
                                AND bts.stop_id    = st.stop_id
-LEFT JOIN bus.BUS_TICKET  t    ON t.passenger_id  = p.passenger_id
-                               AND t.status NOT IN ('CANCELLED','EXPIRED','USED')
-                               AND t.is_deleted   = FALSE
+LEFT JOIN LATERAL (
+    SELECT ticket_id
+    FROM bus.BUS_TICKET bt
+    WHERE bt.passenger_id = p.passenger_id
+      AND bt.status NOT IN ('CANCELLED','EXPIRED','USED')
+      AND bt.is_deleted = FALSE
+    ORDER BY bt.ticket_id DESC
+    LIMIT 1
+) t ON TRUE
+WHERE t.ticket_id IS NOT NULL
 ORDER BY p.passenger_id
 LIMIT 15;
 
@@ -2137,105 +2150,103 @@ SELECT
     NOW() + INTERVAL '4 hours',
     NOW() - (v.created_ago || ' minutes')::INTERVAL
 FROM (VALUES
-    ('AMTS-001','37','AMTS-MANIK','DELAY','WARNING',
+    ('AMTS-001','37','AMTS','AMTS-MANIK','DELAY','WARNING',
      'Route 37: Delay at Maninagar',
      'AMTS Bus 001 (Route 37) delayed 15 min at Maninagar due to heavy traffic.',
      TRUE, 95),
 
-    ('BRTS-001','BRTS-1','BRTS-PKWY','DELAY','WARNING',
+    ('BRTS-001','BRTS-1','BRTS','BRTS-PKWY','DELAY','WARNING',
      'BRTS-1: Road Works Delay — S.G. Highway',
      'BRTS Route 1 delayed 18 min near Pakwan crossroads due to lane closure.',
      FALSE, 30),
 
-    ('BRTS-004','BRTS-2','BRTS-GITAM','DELAY','CRITICAL',
+    ('BRTS-004','BRTS-2','BRTS','BRTS-GITAM','DELAY','CRITICAL',
      'BRTS-2: Station Door Failure at Gitam',
      'BRTS-2 delayed 25 min. Door mechanism fault at Gitam station. Engineers on site.',
      FALSE, 45),
 
-    ('GSRTC-001','GN-001','BUS-MTSB','DELAY','WARNING',
+    ('GSRTC-001','GN-001','GSRTC','BUS-MTSB','DELAY','WARNING',
      'GN-001: Police Barricade Near Motera',
      'GSRTC Ahmedabad-Gandhinagar express delayed 30 min. Police check near Motera Stadium.',
      TRUE, 125),
 
-    ('AMTS-003','105','AMTS-GMND','DELAY','CRITICAL',
+    ('AMTS-003','105','AMTS','AMTS-GMND','DELAY','CRITICAL',
      'Route 105: Heavy Rain — Service Disrupted',
      'Route 105 delayed 45 min. Heavy rainfall causing waterlogging on Drive-In Road.',
      TRUE, 725),
 
-    ('BRTS-005','BRTS-2','BRTS-NAVM','DELAY','CRITICAL',
+    ('BRTS-005','BRTS-2','BRTS','BRTS-NAVM','DELAY','CRITICAL',
      'BRTS-2: Waterlogging — Navrangpura Underpass',
      'BRTS-2 severely delayed. Navrangpura underpass flooded. Buses taking alternate route.',
      FALSE, 1445),
 
-    ('AMTS-007','81','BRTS-ISKON','EMERGENCY','CRITICAL',
-     'EMERGENCY: Bus Fire at ISKON BRTS Station',
-     'Minor engine bay fire at ISKON BRTS. Fire extinguished. Bus out of service. '
+    ('AMTS-007','81','AMTS','BRTS-ISKON','EMERGENCY','CRITICAL',
+     'EMERGENCY: Bus Fire at ISKON BRTS Station.','Minor engine bay fire at ISKON BRTS. Fire extinguished. Bus out of service. '
      'Next bus in 12 minutes. No injuries.',
      TRUE, 125),
 
-    ('GSRTC-001','GN-001','AMTS-CHANDH','DELAY','WARNING',
+    ('GSRTC-001','GN-001','GSRTC','AMTS-CHANDH','DELAY','WARNING',
      'GN-001: Truck Accident — Chandkheda',
      'GSRTC GN-001 delayed 20 min. Truck accident cleared. Service resuming normally.',
      TRUE, 205),
 
-    ('AMTS-005','52','AMTS-USMNP','DELAY','WARNING',
-     'Route 52: Breakdown at Usmanpura',
-     'AMTS Bus 005 (Route 52) had engine issue at Usmanpura. '
+    ('AMTS-005','52','AMTS','AMTS-USMNP','DELAY','WARNING',
+     'Route 52: Breakdown at Usmanpura.','AMTS Bus 005 (Route 52) had engine issue at Usmanpura. '
      'Replacement bus AMTS-006 deployed. 8 min delay.',
      TRUE, 80),
+     (NULL,'37','AMTS','AMTS-LDWJ',
+ 'HIGH_CROWD','INFO',
+ 'Route 37: High Demand at Lal Darwaja',
+ 'Lal Darwaja Bus Stand seeing high passenger volume. Next Route 37 bus in 8 minutes. Please queue in marked areas.',
+ TRUE,120),
 
-    (NULL,NULL,'37','AMTS-LDWJ','HIGH_CROWD','INFO',
-     'Route 37: High Demand at Lal Darwaja',
-     'Lal Darwaja Bus Stand seeing high passenger volume. '
-     'Next Route 37 bus in 8 minutes. Please queue in marked areas.',
-     TRUE, 120),
+    (NULL,'GN-001','GSRTC',NULL,
+ 'GENERAL','INFO',
+ 'GSRTC: Festival Day Extended Service',
+ 'GSRTC running additional trips on GN-001 and GN-002 routes for Navratri festival. Check app for extra timings.',
+ TRUE,1440),
+ 
+('BRTS-003','BRTS-1','BRTS',NULL,
+ 'CANCELLATION','WARNING',
+ 'BRTS-1: Bus BRTS-003 Cancelled',
+ 'Bus BRTS-003 out of service due to air suspension failure. BRTS-002 will cover the schedule. Minor delay expected.',
+ TRUE,720),
 
-    (NULL,NULL,'GN-001',NULL,'GENERAL','INFO',
-     'GSRTC: Festival Day Extended Service',
-     'GSRTC running additional trips on GN-001 and GN-002 routes for Navratri festival. '
-     'Check app for extra timings.',
-     TRUE, 1440),
+    (NULL,'GN-002','GSRTC',NULL,
+ 'ROUTE_CHANGE','INFO',
+ 'GN-002: Alternate Route via Sector-1',
+ 'GN-002 taking alternate route via Sector-1 Gandhinagar today. Infocity stop service unaffected.',
+ FALSE,60),
+ 
+   ('AMTS-009','F1','AMTS',NULL,
+ 'GENERAL','INFO',
+ 'EV Feeder F1: 100% Electric Service',
+ 'Metro feeder bus F1 (Vastral to Vastral Gam Metro) is now fully electric. Silent, clean, zero emissions!',
+ TRUE,4320),
 
-    ('BRTS-003','BRTS-1',NULL,NULL,'CANCELLATION','WARNING',
-     'BRTS-1: Bus BRTS-003 Cancelled',
-     'Bus BRTS-003 out of service due to air suspension failure. '
-     'BRTS-002 will cover the schedule. Minor delay expected.',
-     TRUE, 720),
+(NULL,'GN-NIGHT','GSRTC',NULL,
+ 'GENERAL','INFO',
+ 'Night Service: Last Bus at 05:00',
+ 'GSRTC Night Service (GN-NIGHT) runs Ahmedabad to Gandhinagar. Last departure from Geeta Mandir at 05:00.',
+ TRUE,2880),
 
-    (NULL,NULL,'GN-002',NULL,'ROUTE_CHANGE','INFO',
-     'GN-002: Alternate Route via Sector-1',
-     'GN-002 taking alternate route via Sector-1 Gandhinagar today. '
-     'Infocity stop service unaffected.',
-     FALSE, 60),
+   ('GSRTC-004','GN-003','GSRTC',NULL,
+ 'CANCELLATION','INFO',
+ 'GN-003: Bus Undergoing Overhaul Today',
+ 'GSRTC-004 undergoing mid-life overhaul. GN-003 route suspended today. Use GN-001 with connection at Motera.',
+ FALSE,480),
+ 
+   (NULL,'BRTS-1','BRTS',NULL,
+ 'GENERAL','INFO',
+ 'BRTS: Reduced Frequency on Sunday',
+ 'BRTS corridors running at 15-minute intervals on Sunday instead of 8 minutes.',
+ TRUE,4320),
 
-    ('AMTS-009','F1',NULL,NULL,'GENERAL','INFO',
-     'EV Feeder F1: 100% Electric Service',
-     'Metro feeder bus F1 (Vastral to Vastral Gam Metro) is now fully electric. '
-     'Silent, clean, zero emissions!',
-     TRUE, 4320),
-
-    (NULL,NULL,'GN-NIGHT',NULL,'GENERAL','INFO',
-     'Night Service: Last Bus at 05:00',
-     'GSRTC Night Service (GN-NIGHT) runs Ahmedabad to Gandhinagar. '
-     'Last departure from Geeta Mandir at 05:00.',
-     TRUE, 2880),
-
-    ('GSRTC-004','GN-003',NULL,NULL,'CANCELLATION','INFO',
-     'GN-003: Bus Undergoing Overhaul Today',
-     'GSRTC-004 undergoing mid-life overhaul. GN-003 route suspended today. '
-     'Use GN-001 with connection at Motera.',
-     FALSE, 480),
-
-    (NULL,NULL,'BRTS-1',NULL,'GENERAL','INFO',
-     'BRTS: Reduced Frequency on Sunday',
-     'BRTS corridors running at 15-minute intervals on Sunday instead of 8 minutes.',
-     TRUE, 4320),
-
-    (NULL,NULL,'GN-001',NULL,'HIGH_CROWD','WARNING',
-     'GN-001: Full Buses — Cricket Match at Motera',
-     'GSRTC GN-001 buses full due to IPL match at Motera Stadium. '
-     'Extra trips added at 14:30 and 15:00.',
-     FALSE, 90)
+   (NULL,'GN-001','GSRTC',NULL,
+ 'HIGH_CROWD','WARNING',
+ 'GN-001: Full Buses — Cricket Match at Motera',
+ 'GSRTC GN-001 buses full due to IPL match at Motera Stadium. Extra trips added at 14:30 and 15:00.',
+ FALSE,90)
 
 ) AS v(bus_num, route_no, op_code, stop_code,
        alert_type, severity, title, message, is_resolved, created_ago)

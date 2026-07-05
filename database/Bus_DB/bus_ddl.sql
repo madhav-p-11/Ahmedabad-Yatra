@@ -646,14 +646,21 @@ CREATE TABLE bus.BUS_DRIVER_SHIFT (
     shift_date      DATE                NOT NULL,
     shift_start     TIME                NOT NULL,
     shift_end       TIME                NOT NULL,
-    working_hours   NUMERIC(4,2)
-                    GENERATED ALWAYS AS (
-                        ROUND(
-                            EXTRACT(EPOCH FROM (
-                                shift_end::INTERVAL - shift_start::INTERVAL
-                            )) / 3600.0, 2
-                        )
-                    ) STORED,
+    working_hours NUMERIC(4,2)
+GENERATED ALWAYS AS (
+    ROUND(
+        EXTRACT(EPOCH FROM (
+            CASE
+                WHEN shift_end >= shift_start THEN
+                    shift_end::INTERVAL - shift_start::INTERVAL
+                ELSE
+                    (shift_end::INTERVAL + INTERVAL '24 hours')
+                    - shift_start::INTERVAL
+            END
+        )) / 3600.0,
+        2
+    )
+) STORED,
     shift_type      VARCHAR(20)         NOT NULL DEFAULT 'REGULAR'
                         CHECK (shift_type IN ('REGULAR','OVERTIME','SPLIT','EMERGENCY')),
     is_completed    BOOLEAN             NOT NULL DEFAULT FALSE,
@@ -669,7 +676,18 @@ CREATE TABLE bus.BUS_DRIVER_SHIFT (
         REFERENCES bus.BUS_DRIVER(driver_id)
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT chk_bshift_times
-        CHECK (shift_end > shift_start)
+CHECK (
+    (
+        CASE
+            WHEN shift_end >= shift_start THEN
+                shift_end::INTERVAL - shift_start::INTERVAL
+            ELSE
+                (shift_end::INTERVAL + INTERVAL '24 hours')
+                - shift_start::INTERVAL
+        END
+    )
+    BETWEEN INTERVAL '1 hour' AND INTERVAL '16 hours'
+)
 );
 
 SELECT bus.fn_attach_updated_at('bus_driver_shift');
@@ -713,7 +731,9 @@ CREATE TABLE bus.BUS_SCHEDULE (
         REFERENCES bus.BUS_ROUTE(route_id)
         ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT chk_bsch_times
-        CHECK (arrival_time > departure_time),
+CHECK (
+    arrival_time <> departure_time
+),
     CONSTRAINT chk_bsch_dates
         CHECK (effective_to IS NULL OR effective_to >= effective_from)
 );
